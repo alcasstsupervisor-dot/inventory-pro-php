@@ -1,13 +1,14 @@
 import streamlit as st
 import pandas as pd
 import datetime
+import os
 
 # --- APP CONFIG ---
-st.set_page_config(page_title="LCIS Pro", layout="wide")
+st.set_page_config(page_title="LCIS - Anihan", layout="wide")
 
 # --- 1. ACCESS CONTROL ---
-AUTHORIZED_DOMAIN = "@yourcompany.com" # Change this to your actual domain
-ADMIN_EMAIL = "admin@yourcompany.com"   # Change this to your admin email
+AUTHORIZED_DOMAIN = "@anihan.edu.ph"
+ADMIN_EMAIL = "admin@anihan.edu.ph" # Change this to your specific admin email
 
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
@@ -15,189 +16,216 @@ if 'logged_in' not in st.session_state:
 
 if not st.session_state.logged_in:
     st.title("🔐 LCIS Login")
-    email = st.text_input("Enter Company Email")
+    email = st.text_input("Enter your Anihan Email")
     if st.button("Login"):
-        if email.endswith(AUTHORIZED_DOMAIN):
+        if email.lower().endswith(AUTHORIZED_DOMAIN):
             st.session_state.logged_in = True
-            st.session_state.user_email = email
+            st.session_state.user_email = email.lower()
             st.rerun()
         else:
-            st.error("Access denied. Please use a company email.")
+            st.error(f"Access denied. Only {AUTHORIZED_DOMAIN} accounts allowed.")
     st.stop()
 
-# --- 2. DATA INITIALIZATION ---
-# Using 3 decimal places for Qty/Cost throughout
+# --- 2. LOCAL DATA PERSISTENCE ---
+# This saves your data to a CSV file so it doesn't disappear on refresh
+DB_FILE = "lcis_database.csv"
+SUP_FILE = "suppliers_database.csv"
+HIST_FILE = "replenish_history.csv"
+
+def load_data(file, columns):
+    if os.path.exists(file):
+        return pd.read_csv(file)
+    return pd.DataFrame(columns=columns)
+
+def save_data(df, file):
+    df.to_csv(file, index=False)
+
+# Initialize Dataframes
 if 'products' not in st.session_state:
-    st.session_state.products = pd.DataFrame(columns=[
-        "SAP Code", "Name", "Type", "Supplier", "Qty", "Unit", "Min_Level", "Cost", 
-        "Prev_Date", "Prev_Qty", "Prev_Cost"
-    ])
-
+    st.session_state.products = load_data(DB_FILE, ["SAP Code", "Name", "Type", "Supplier", "Qty", "Unit", "Min_Level", "Cost", "Prev_Date", "Prev_Qty", "Prev_Cost"])
 if 'suppliers' not in st.session_state:
-    st.session_state.suppliers = pd.DataFrame([
-        {"Name": "Global Grain", "Contact": "0917-123-4567", "Delivery": "Monday"}
-    ])
-
+    st.session_state.suppliers = load_data(SUP_FILE, ["Name", "Contact", "Delivery"])
 if 'replenish_history' not in st.session_state:
-    st.session_state.replenish_history = pd.DataFrame()
-
+    st.session_state.replenish_history = load_data(HIST_FILE, ["Date", "SAP", "Name", "Qty", "Cost", "Total"])
 if 'recipes' not in st.session_state:
-    st.session_state.recipes = {} # Structure: {"Bread": {"Ingredients": {"Flour": 0.5}, "Output_Qty": 1}}
+    st.session_state.recipes = {}
 
 UNITS = ["bottles", "sack", "carboy", "kgs", "g", "ml", "L", "plastic bag", "Others"]
 
 # --- NAVIGATION ---
-st.sidebar.title(f"👋 Hello, {st.session_state.user_email.split('@')[0]}!")
+user_name = st.session_state.user_email.split('@')[0].replace('.', ' ').title()
+st.sidebar.title(f"👋 Mabuhay, {user_name}!")
 page = st.sidebar.radio("LCIS Menu", ["Dashboard", "Inventory & Suppliers", "Replenish Stock", "Recipes & Forecasting", "Financials"])
 
 # --- DASHBOARD ---
 if page == "Dashboard":
-    st.title(f"📊 LCIS Dashboard")
-    st.write(f"Welcome back! Logged in as: **{st.session_state.user_email}**")
+    st.title("📊 LCIS Dashboard")
+    st.write(f"Logged in: **{st.session_state.user_email}**")
     
-    # Summary Metrics
     if not st.session_state.products.empty:
-        total_val = (st.session_state.products['Qty'] * st.session_state.products['Cost']).sum()
-        low_count = len(st.session_state.products[st.session_state.products['Qty'] <= st.session_state.products['Min_Level']])
+        total_val = (st.session_state.products['Qty'].astype(float) * st.session_state.products['Cost'].astype(float)).sum()
+        low_stock_mask = st.session_state.products['Qty'].astype(float) <= st.session_state.products['Min_Level'].astype(float)
         
         c1, c2 = st.columns(2)
-        c1.metric("Total Stock Value", f"₱{total_val:,.3f}")
-        c2.metric("Low Stock Items", low_count)
+        c1.metric("Total Inventory Value", f"₱{total_val:,.3f}")
+        c2.metric("Low Stock Items", len(st.session_state.products[low_stock_mask]))
 
-        # Color Coding Table
-        def style_stock(row):
-            color = 'background-color: #ff4b4b' if row['Qty'] <= row['Min_Level'] else ''
-            return [color] * len(row)
+        st.subheader("Inventory Status")
+        def style_rows(row):
+            if float(row['Qty']) <= float(row['Min_Level']):
+                return ['background-color: #ff4b4b'] * len(row)
+            return [''] * len(row)
         
-        st.subheader("Inventory List")
-        st.dataframe(st.session_state.products.style.apply(style_stock, axis=1), use_container_width=True)
+        st.dataframe(st.session_state.products.style.apply(style_rows, axis=1), use_container_width=True)
     else:
-        st.info("No items in inventory yet.")
+        st.info("Database empty. Add materials in the next tab.")
 
 # --- INVENTORY & SUPPLIERS ---
 elif page == "Inventory & Suppliers":
-    st.title("📦 Master Data Management")
+    st.title("📦 Master Data")
     is_admin = st.session_state.user_email == ADMIN_EMAIL
     
-    t1, t2 = st.tabs(["All Products (Raw & Indirect)", "Supplier Directory"])
+    tab_p, tab_s = st.tabs(["Materials (Raw/Indirect)", "Suppliers"])
     
-    with t1:
-        with st.expander("➕ Add New Material (Raw/Indirect)"):
+    with tab_p:
+        st.subheader("Complete Material List")
+        st.dataframe(st.session_state.products, use_container_width=True)
+        
+        with st.expander("➕ Add New Material / SAP Entry"):
             with st.form("add_mat"):
-                col_a, col_b = st.columns(2)
-                sap = col_a.text_input("SAP Code")
-                name = col_b.text_input("Material Name")
-                m_type = col_a.selectbox("Material Type", ["Raw Material", "Indirect Material"])
-                unit = col_b.selectbox("Unit of Measure", UNITS)
-                if unit == "Others":
-                    unit = st.text_input("Specify Other Unit")
+                c1, c2 = st.columns(2)
+                sap = c1.text_input("SAP Code")
+                name = c2.text_input("Material Name")
+                m_type = c1.selectbox("Type", ["Raw Material", "Indirect Material"])
+                unit = c2.selectbox("Unit", UNITS)
+                if unit == "Others": unit = st.text_input("Specify Unit")
                 
-                cost = col_a.number_input("Unit Cost (₱)", format="%.3f")
-                qty = col_b.number_input("Initial Qty", format="%.3f")
-                min_l = col_a.number_input("Min Level (Replenish trigger)", format="%.3f")
-                sup = col_b.selectbox("Supplier", st.session_state.suppliers['Name'])
+                cost = c1.number_input("Cost (₱)", format="%.3f")
+                qty = c2.number_input("Initial Qty", format="%.3f")
+                min_l = c1.number_input("Min Level", format="%.3f")
+                sup_list = st.session_state.suppliers['Name'].tolist() if not st.session_state.suppliers.empty else ["No Suppliers"]
+                sup = c2.selectbox("Supplier", sup_list)
                 
-                if st.form_submit_button("Save to System"):
-                    new_row = pd.DataFrame([{"SAP Code": sap, "Name": name, "Type": m_type, "Supplier": sup, "Qty": qty, "Unit": unit, "Min_Level": min_l, "Cost": cost}])
-                    st.session_state.products = pd.concat([st.session_state.products, new_row], ignore_index=True)
+                if st.form_submit_button("Confirm Add"):
+                    new_item = {"SAP Code": sap, "Name": name, "Type": m_type, "Supplier": sup, "Qty": qty, "Unit": unit, "Min_Level": min_l, "Cost": cost}
+                    st.session_state.products = pd.concat([st.session_state.products, pd.DataFrame([new_item])], ignore_index=True)
+                    save_data(st.session_state.products, DB_FILE)
+                    st.success("Added to SAP record.")
                     st.rerun()
 
-    with t2:
+    with tab_s:
         if is_admin:
-            st.subheader("Manage Suppliers (Admin Only)")
-            # Edit/Delete logic would go here
-            st.data_editor(st.session_state.suppliers, num_rows="dynamic", key="sup_editor")
+            st.subheader("Admin: Manage Suppliers")
+            edited_sup = st.data_editor(st.session_state.suppliers, num_rows="dynamic")
+            if st.button("Save Supplier Changes"):
+                st.session_state.suppliers = edited_sup
+                save_data(st.session_state.suppliers, SUP_FILE)
+                st.success("Suppliers Updated")
         else:
-            st.warning("Only Admins can edit supplier details.")
+            st.warning("Supplier editing restricted to Admin.")
             st.table(st.session_state.suppliers)
 
 # --- REPLENISH STOCK ---
 elif page == "Replenish Stock":
-    st.title("🛒 Replenishment Module")
+    st.title("🛒 Replenishment & History")
     
-    low_stock = st.session_state.products[st.session_state.products['Qty'] <= (st.session_state.products['Min_Level'] * 1.2)]
+    # Show History First
+    with st.expander("📜 Replenishment History"):
+        st.dataframe(st.session_state.replenish_history, use_container_width=True)
+
+    st.subheader("Active Replenishment Form")
+    # Threshold for replenishment (Red + 1 Week Warning)
+    replenish_target = st.session_state.products[st.session_state.products['Qty'].astype(float) <= (st.session_state.products['Min_Level'].astype(float) * 1.2)]
     
-    if not low_stock.empty:
-        selected = st.multiselect("Select Low Stock Items", low_stock['Name'])
+    if not replenish_target.empty:
+        selected = st.multiselect("Select materials to replenish:", replenish_target['Name'])
         
-        orders = []
+        form_data = []
         for item in selected:
             row = st.session_state.products[st.session_state.products['Name'] == item].iloc[0]
-            st.divider()
-            st.write(f"**Item:** {item} | **Current Qty:** {row['Qty']:.3f}")
+            st.write(f"---")
+            st.write(f"**{item}** (SAP: {row['SAP Code']})")
             
-            same_as_prev = st.checkbox(f"Same as previous purchase? (Qty: {row['Prev_Qty']}, Cost: {row['Prev_Cost']})", key=f"check_{item}")
+            c1, c2 = st.columns(2)
+            use_prev = c1.checkbox(f"Use previous cost/qty? (Qty: {row['Prev_Qty']}, Cost: {row['Prev_Cost']})", key=f"p_{item}")
             
-            new_q = row['Prev_Qty'] if same_as_prev else st.number_input(f"New Qty for {item}", format="%.3f", key=f"q_{item}")
-            new_c = row['Prev_Cost'] if same_as_prev else st.number_input(f"New Cost for {item}", format="%.3f", key=f"c_{item}")
+            new_q = row['Prev_Qty'] if use_prev else c2.number_input(f"New Qty for {item}", format="%.3f", key=f"q_{item}")
+            new_c = row['Prev_Cost'] if use_prev else c1.number_input(f"New Cost for {item}", format="%.3f", key=f"c_{item}")
             
-            orders.append({"SAP": row['SAP Code'], "Name": item, "Qty": new_q, "Cost": new_c, "Total": new_q * new_c})
+            form_data.append({"Date": str(datetime.date.today()), "SAP": row['SAP Code'], "Name": item, "Qty": new_q, "Cost": new_c, "Total": new_q * new_c})
 
-        if orders and st.button("Generate Summary & Update"):
-            summary_df = pd.DataFrame(orders)
-            st.session_state.last_summary = summary_df
+        if form_data and st.button("Update Inventory & Show Summary"):
+            for order in form_data:
+                idx = st.session_state.products[st.session_state.products['Name'] == order['Name']].index[0]
+                st.session_state.products.at[idx, 'Qty'] += order['Qty']
+                st.session_state.products.at[idx, 'Cost'] = order['Cost']
+                st.session_state.products.at[idx, 'Prev_Qty'] = order['Qty']
+                st.session_state.products.at[idx, 'Prev_Cost'] = order['Cost']
+                st.session_state.products.at[idx, 'Prev_Date'] = order['Date']
             
-            # Update Inventory Logic
-            for o in orders:
-                idx = st.session_state.products[st.session_state.products['Name'] == o['Name']].index[0]
-                st.session_state.products.at[idx, 'Prev_Qty'] = o['Qty']
-                st.session_state.products.at[idx, 'Prev_Cost'] = o['Cost']
-                st.session_state.products.at[idx, 'Prev_Date'] = str(datetime.date.today())
-                st.session_state.products.at[idx, 'Qty'] += o['Qty']
+            # Save
+            new_hist = pd.concat([st.session_state.replenish_history, pd.DataFrame(form_data)], ignore_index=True)
+            st.session_state.replenish_history = new_hist
+            save_data(st.session_state.products, DB_FILE)
+            save_data(st.session_state.replenish_history, HIST_FILE)
             
-            # Log History
-            st.session_state.replenish_history = pd.concat([st.session_state.replenish_history, summary_df], ignore_index=True)
-            st.success("System updated!")
-
-    # Print Section
-    if 'last_summary' in st.session_state:
-        st.subheader("Current Order Summary")
-        st.table(st.session_state.last_summary)
-        if st.button("🖨️ Print Summary"):
-            st.write("Printing... (Your browser print dialog should open)")
-            # JavaScript trick for printing
+            st.subheader("Order Summary")
+            summary_df = pd.DataFrame(form_data)
+            st.table(summary_df)
+            
+            # Print Function
             st.components.v1.html(f"""
-                <script>window.print();</script>
-                <h3>Order Summary - {datetime.date.today()}</h3>
-                {st.session_state.last_summary.to_html()}
-            """, height=0)
+                <script>function printDiv() {{ window.print(); }}</script>
+                <button onclick="printDiv()" style="padding:10px; background:#4CAF50; color:white; border:none; border-radius:5px; cursor:pointer;">🖨️ Click Here to Print Summary</button>
+                <div id="printarea">
+                    <h2>LCIS Replenishment Summary - {datetime.date.today()}</h2>
+                    {summary_df.to_html()}
+                </div>
+            """, height=300)
 
 # --- RECIPES ---
 elif page == "Recipes & Forecasting":
-    st.title("🧪 Recipes & Forecasting")
+    st.title("🧪 Recipe Production")
     
-    with st.expander("➕ Create New Recipe"):
-        r_name = st.text_input("Finished Product Name (e.g., Bread Variant A)")
-        ingredients = st.multiselect("Select Ingredients", st.session_state.products['Name'])
+    t_add, t_exec = st.tabs(["Add New Recipe", "Process Production"])
+    
+    with t_add:
+        r_name = st.text_input("Finished Product/Variant Name")
+        ingredients = st.multiselect("Select Raw/Indirect Materials used:", st.session_state.products['Name'])
         
-        ing_map = {}
+        recipe_details = {}
         for ing in ingredients:
-            amt = st.number_input(f"Amount of {ing} needed for 1 unit", format="%.3f")
-            ing_map[ing] = amt
-            
-        if st.button("Save Recipe"):
-            st.session_state.recipes[r_name] = ing_map
-            st.success("Recipe Saved")
-
-    st.subheader("Process Production/Sale")
-    if st.session_state.recipes:
-        prod = st.selectbox("Select Recipe to Process", list(st.session_state.recipes.keys()))
-        amount_to_make = st.number_input("Quantity to produce", min_value=1)
+            amt = st.number_input(f"Amount of {ing} per 1 unit of product", format="%.3f")
+            recipe_details[ing] = amt
         
-        if st.button("Confirm Production"):
-            needed = st.session_state.recipes[prod]
-            for item, qty_per in needed.items():
-                total_deduct = qty_per * amount_to_make
-                idx = st.session_state.products[st.session_state.products['Name'] == item].index[0]
-                st.session_state.products.at[idx, 'Qty'] -= total_deduct
-            st.success("Inventory updated based on recipe forecasting.")
+        if st.button("Save Recipe") and r_name:
+            st.session_state.recipes[r_name] = recipe_details
+            st.success(f"Recipe for {r_name} saved!")
+
+    with t_exec:
+        if st.session_state.recipes:
+            choice = st.selectbox("Select Item to Produce", list(st.session_state.recipes.keys()))
+            batch = st.number_input("Batch Size / Quantity", min_value=1)
+            
+            if st.button("Execute Production"):
+                needed = st.session_state.recipes[choice]
+                for item, qty_per in needed.items():
+                    total_used = qty_per * batch
+                    idx = st.session_state.products[st.session_state.products['Name'] == item].index[0]
+                    st.session_state.products.at[idx, 'Qty'] -= total_used
+                
+                save_data(st.session_state.products, DB_FILE)
+                st.success(f"Production complete. Stock deducted for {choice}.")
+        else:
+            st.info("No recipes found.")
 
 # --- FINANCIALS ---
 elif page == "Financials":
-    st.title("💸 Monthly Expense Analysis")
-    # Fix for the 'ME' issue
+    st.title("💸 Monthly Expense Tracker")
     if not st.session_state.replenish_history.empty:
-        # Assuming Date column exists in history
-        st.write("Monthly Expense Movement")
-        # Logic to chart replenishment history over time
-        st.dataframe(st.session_state.replenish_history)
+        df_exp = st.session_state.replenish_history.copy()
+        df_exp['Date'] = pd.to_datetime(df_exp['Date'])
+        monthly = df_exp.resample('ME', on='Date')['Total'].sum()
+        st.line_chart(monthly)
+        st.write("Raw Expense Data:")
+        st.dataframe(df_exp)
