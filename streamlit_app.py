@@ -3,9 +3,8 @@ import pandas as pd
 import datetime
 import os
 
-# --- 1. CONFIG & AUTHENTICATION ---
-st.set_page_config(page_title="LCIS - Anihan", layout="wide")
-
+# --- 1. CONFIG & AUTH ---
+st.set_page_config(page_title="LCIS - Verification System", layout="wide")
 ADMINS = [
     "cecille.sulit@anihan.edu.ph", 
     "aileen.clutario@anihan.edu.ph", 
@@ -14,147 +13,133 @@ ADMINS = [
 ]
 AUTHORIZED_DOMAIN = "@anihan.edu.ph"
 
-# --- 2. DATA PERSISTENCE FILES ---
-DB_FILE = "lcis_main_v4.csv"
-HIST_FILE = "change_log_v4.csv"
-DELIVERY_FILE = "deliveries_v4.csv"
-LOGIN_LOG_FILE = "login_history_v4.csv"
+# --- 2. DATA FILES ---
+DB_FILE = "lcis_main_v7.csv"
+PENDING_FILE = "pending_deliveries_v7.csv"
+HIST_FILE = "change_log_v7.csv"
+LOGIN_LOG_FILE = "login_history_v7.csv"
 
 def load_data(file, columns):
-    if os.path.exists(file):
-        return pd.read_csv(file)
+    if os.path.exists(file): return pd.read_csv(file)
     return pd.DataFrame(columns=columns)
 
-def save_data(df, file):
-    df.to_csv(file, index=False)
+def save_data(df, file): df.to_csv(file, index=False)
 
-def log_event(file, entry_dict):
-    df = load_data(file, list(entry_dict.keys()))
-    new_row = pd.DataFrame([entry_dict])
-    pd.concat([df, new_row], ignore_index=True).to_csv(file, index=False)
-
-# --- 3. LOGIN SCREEN ---
+# --- 3. LOGIN & SESSION ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user_role = "Staff"
-    st.session_state.display_name = ""
 
 if not st.session_state.logged_in:
     st.title("🔐 LCIS Login Portal")
-    email_input = st.text_input("Anihan Email Address").lower().strip()
-    full_name = st.text_input("Enter Your Full Name (First Name Last Name)")
-    
+    email_input = st.text_input("Anihan Email").lower().strip()
+    full_name = st.text_input("Enter Your Full Name")
     if st.button("Access System"):
-        if not full_name:
-            st.warning("Please enter your name before proceeding.")
-        elif email_input in ADMINS or email_input.endswith(AUTHORIZED_DOMAIN):
+        if email_input in ADMINS or email_input.endswith(AUTHORIZED_DOMAIN):
             st.session_state.logged_in = True
             st.session_state.user_email = email_input
             st.session_state.display_name = full_name
             st.session_state.user_role = "Admin" if email_input in ADMINS else "Staff"
-            
-            # Record Login in Admin Database
-            log_event(LOGIN_LOG_FILE, {
-                "Timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "Name": full_name,
-                "Email": email_input,
-                "Role": st.session_state.user_role
-            })
             st.rerun()
-        else:
-            st.error(f"Access Denied. Only {AUTHORIZED_DOMAIN} emails are authorized.")
     st.stop()
 
-# --- 4. GREETING LOGIC ---
-now = datetime.datetime.now()
-hour = now.hour
-if hour < 12: greeting = "Good morning"
-elif 12 <= hour < 18: greeting = "Good afternoon"
-else: greeting = "Good evening"
+# Load Databases into Session
+st.session_state.products = load_data(DB_FILE, ["SAP Code", "Name", "Type", "On hand Inventory", "Min_Level", "Cost"])
+pending_df = load_data(PENDING_FILE, ["ID", "Date", "DR", "SAP", "Item", "Qty", "Status", "Staff", "Admin_Note"])
 
-# --- 5. SIDEBAR NAVIGATION ---
+# --- 4. NAVIGATION ---
 is_admin = st.session_state.user_role == "Admin"
-st.sidebar.title(f"🏠 LCIS {st.session_state.user_role}")
-st.sidebar.write(f"**{greeting}, {st.session_state.user_role} {st.session_state.display_name}**")
-
 if is_admin:
-    menu = ["Dashboard", "Inventory & Suppliers", "Replenish Stock", "Recipes & Forecasting", "Delivery", "Admin Panel"]
+    menu = ["Dashboard", "Materials (Raw/Indirect)", "Replenish Stock", "Delivery", "Admin Panel"]
 else:
-    menu = ["Dashboard", "Inventory & Suppliers", "Delivery"]
-
+    menu = ["Dashboard", "Materials (Raw/Indirect)", "Delivery"]
 page = st.sidebar.radio("Navigation", menu)
 
-# --- 6. PAGE CONTENT ---
+if st.sidebar.button("Logout"):
+    st.session_state.logged_in = False
+    st.rerun()
 
-# Initialize Products for all pages
-if 'products' not in st.session_state:
-    st.session_state.products = load_data(DB_FILE, ["SAP Code", "Name", "Type", "Supplier", "On hand Inventory", "Unit", "Min_Level", "Cost"])
+# --- 5. PAGE LOGIC ---
 
 if page == "Dashboard":
     st.title("📊 Dashboard")
-    st.subheader(f"{greeting}, Staff {st.session_state.display_name}")
+    # Show items that are "Pending" but were rejected/returned for correction
+    corrections = pending_df[pending_df['Status'] == "Pending (Correction Needed)"]
+    if not corrections.empty:
+        st.error(f"⚠️ {len(corrections)} Deliveries were rejected by Admin and need correction.")
+        st.dataframe(corrections)
     
-    if st.session_state.products.empty:
-        st.info("No items in inventory. Admins can add items in 'Inventory & Suppliers'.")
-    else:
-        # Display table with 3 decimal places
-        st.dataframe(st.session_state.products, use_container_width=True)
+    st.subheader("Current Inventory Status")
+    st.dataframe(st.session_state.products, use_container_width=True)
 
 elif page == "Delivery":
-    st.title("🚚 Delivery Receiving")
-    st.write("Match items via SAP Code or Name (Case-insensitive)")
+    st.title("🚚 Delivery Input")
+    with st.form("staff_del", clear_on_submit=True):
+        d_date = st.date_input("Date Received")
+        dr_ref = st.text_input("DR #")
+        search = st.text_input("Search SAP or Name").upper().strip()
+        qty = st.number_input("Qty Received", format="%.3f")
+        if st.form_submit_button("Submit for Verification"):
+            new_id = len(pending_df) + 1
+            new_entry = {
+                "ID": new_id, "Date": d_date, "DR": dr_ref, "SAP": search, "Item": search, 
+                "Qty": qty, "Status": "Pending", "Staff": st.session_state.display_name, "Admin_Note": ""
+            }
+            pending_df = pd.concat([pending_df, pd.DataFrame([new_entry])], ignore_index=True)
+            save_data(pending_df, PENDING_FILE)
+            st.success("Sent to Admin for approval.")
+
+elif page == "Replenish Stock" and is_admin:
+    st.title("🛒 Replenishment & Verification")
     
-    with st.form("del_form", clear_on_submit=True):
-        d_date = st.date_input("Delivery Date", value=datetime.date.today())
-        dr_ref = st.text_input("DR Reference Number")
-        search_query = st.text_input("Search SAP Code or Item Name").strip().upper()
+    # --- ADMIN NOTIFICATION ---
+    to_verify = pending_df[pending_df['Status'].str.contains("Pending")]
+    
+    if not to_verify.empty:
+        st.write("### 🔔 Delivery Verification Queue")
+        for index, row in to_verify.iterrows():
+            status_color = "🔴" if "Correction" in row['Status'] else "🔵"
+            if st.button(f"{status_color} Review DR: {row['DR']} ({row['Item']})", key=f"btn_{row['ID']}"):
+                st.session_state.review_id = row['ID']
+
+    if 'review_id' in st.session_state:
+        # Fetch the specific row to edit
+        row_idx = pending_df[pending_df['ID'] == st.session_state.review_id].index[0]
+        rev_item = pending_df.loc[row_idx]
         
-        # Search logic
-        match = st.session_state.products[
-            (st.session_state.products['SAP Code'].str.upper() == search_query) | 
-            (st.session_state.products['Name'].str.upper() == search_query)
-        ]
+        st.divider()
+        st.write(f"### Reviewing Delivery: {rev_item['DR']}")
         
-        qty_rec = st.number_input("Quantity Received", format="%.3f")
-        
-        if st.form_submit_button("Submit Delivery"):
-            if not match.empty:
-                item_name = match.iloc[0]['Name']
-                idx = match.index[0]
-                
-                # Update Inventory
-                st.session_state.products.at[idx, 'On hand Inventory'] += qty_rec
+        # Admin can correct the info before confirming
+        c1, c2 = st.columns(2)
+        edit_sap = c1.text_input("Correct SAP Code", value=rev_item['SAP']).upper()
+        edit_qty = c2.number_input("Correct Quantity", value=float(rev_item['Qty']), format="%.3f")
+        admin_note = st.text_area("Notes for Staff (if rejecting)", value=rev_item['Admin_Note'])
+
+        b1, b2, b3 = st.columns(3)
+        if b1.button("✅ Confirm & Replenish"):
+            # 1. Update Inventory
+            match_idx = st.session_state.products[st.session_state.products['SAP Code'].str.upper() == edit_sap].index
+            if not match_idx.empty:
+                st.session_state.products.at[match_idx[0], 'On hand Inventory'] += edit_qty
                 save_data(st.session_state.products, DB_FILE)
-                
-                # Log the delivery
-                log_event(DELIVERY_FILE, {
-                    "Date": d_date, "DR": dr_ref, "SAP": match.iloc[0]['SAP Code'], 
-                    "Item": item_name, "Qty": qty_rec, "Receiver": st.session_state.display_name
-                })
-                
-                # Log for Admin Audit
-                log_event(HIST_FILE, {
-                    "Timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "User": st.session_state.display_name,
-                    "Action": "DELIVERY",
-                    "Details": f"Received {qty_rec} of {item_name}"
-                })
-                st.success(f"Successfully added {qty_rec} to {item_name}!")
+                # 2. Mark as Replenished
+                pending_df.at[row_idx, 'Status'] = "Replenished"
+                save_data(pending_df, PENDING_FILE)
+                st.success("Inventory updated successfully!")
+                del st.session_state.review_id
+                st.rerun()
             else:
-                st.error("Item not found. Please contact an Admin to register this SAP Code.")
+                st.error("SAP Code not found in master list. Add material first.")
 
-elif page == "Admin Panel":
-    st.title("🛡️ Admin Panel")
-    t1, t2, t3 = st.tabs(["Login History", "Change Log", "Expenses"])
-    
-    with t1:
-        st.subheader("User Access History")
-        login_history = load_data(LOGIN_LOG_FILE, ["Timestamp", "Name", "Email", "Role"])
-        st.dataframe(login_history.sort_values(by="Timestamp", ascending=False), use_container_width=True)
-        
-    with t2:
-        st.subheader("System Change Audit")
-        audit_log = load_data(HIST_FILE, ["Timestamp", "User", "Action", "Details"])
-        st.dataframe(audit_log.sort_values(by="Timestamp", ascending=False), use_container_width=True)
-
-# Note: Other tabs (Replenish, Recipes) remain restricted to Admin based on the 'menu' logic.
+        if b2.button("↩️ Send Back for Correction"):
+            pending_df.at[row_idx, 'Status'] = "Pending (Correction Needed)"
+            pending_df.at[row_idx, 'Admin_Note'] = admin_note
+            save_data(pending_df, PENDING_FILE)
+            st.info("Marked for correction. Remains in Pending.")
+            del st.session_state.review_id
+            st.rerun()
+            
+        if b3.button("Close Review"):
+            del st.session_state.review_id
+            st.rerun()
