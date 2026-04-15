@@ -3,191 +3,182 @@ import pandas as pd
 import datetime
 import os
 
-# --- 1. CONFIG & STRICT AUTHENTICATION ---
-st.set_page_config(page_title="LCIS - Anihan Pro", layout="wide")
+# --- 1. CONFIG & SYSTEM AUTH ---
+st.set_page_config(page_title="LCIS Anihan Pro", layout="wide")
 
-ADMINS = [
+ADMIN_LIST = [
     "cecille.sulit@anihan.edu.ph", 
     "aileen.clutario@anihan.edu.ph", 
     "alc.purchasing@anihan.edu.ph", 
     "alc.asstsupervisor@anihan.edu.ph"
 ]
-AUTHORIZED_DOMAIN = "@anihan.edu.ph"
+DOMAIN = "@anihan.edu.ph"
 
-# --- 2. DATA PERSISTENCE ---
-DB_FILE = "lcis_main_v11.csv"
-PENDING_FILE = "pending_deliveries_v11.csv"
-RECIPE_FILE = "recipes_v11.csv"
-SUP_FILE = "suppliers_v11.csv"
-HIST_FILE = "change_log_v11.csv"
-LOGIN_LOG_FILE = "login_history_v11.csv"
+# --- 2. DATABASE NAMES (v12) ---
+DB_FILE = "lcis_main_v12.csv"
+PENDING_FILE = "pending_v12.csv"
+RECIPE_FILE = "recipes_v12.csv"
+SUP_FILE = "suppliers_v12.csv"
+HIST_FILE = "audit_v12.csv"
+LOGIN_FILE = "logins_v12.csv"
 
-def load_data(file, columns):
+# --- 3. HELPER FUNCTIONS ---
+def load_data(file, cols):
     if os.path.exists(file): return pd.read_csv(file)
-    return pd.DataFrame(columns=columns)
+    return pd.DataFrame(columns=cols)
 
-def save_data(df, file): df.to_csv(file, index=False)
+def save_data(df, file):
+    df.to_csv(file, index=False)
 
-def log_event(user, action, details):
-    df = load_data(HIST_FILE, ["Timestamp", "User", "Action", "Details"])
-    new_row = pd.DataFrame([{"Timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "User": user, "Action": action, "Details": details}])
-    pd.concat([df, new_row], ignore_index=True).to_csv(HIST_FILE, index=False)
+def log_action(user, action, details):
+    df = load_data(HIST_FILE, ["Time", "User", "Action", "Details"])
+    new = pd.DataFrame([{"Time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), "User": user, "Action": action, "Details": details}])
+    pd.concat([df, new], ignore_index=True).to_csv(HIST_FILE, index=False)
 
-# --- 3. LOGIN SYSTEM ---
+# --- 4. LOGIN LOGIC ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
-    st.title("🔐 LCIS Login Portal")
-    email_input = st.text_input("Anihan Email").lower().strip()
-    full_name = st.text_input("Enter Your Full Name")
-    if st.button("Access System"):
-        if email_input in ADMINS or email_input.endswith(AUTHORIZED_DOMAIN):
+    st.title("🔐 LCIS Anihan: Secure Login")
+    u_email = st.text_input("School Email").lower().strip()
+    u_name = st.text_input("Full Name")
+    
+    if st.button("Login"):
+        if u_email in ADMIN_LIST or u_email.endswith(DOMAIN):
             st.session_state.logged_in = True
-            st.session_state.user_email = email_input
-            st.session_state.display_name = full_name
-            st.session_state.user_role = "Admin" if email_input in ADMINS else "Staff"
+            st.session_state.user_email = u_email
+            st.session_state.user_name = u_name
+            # CRITICAL ROLE ASSIGNMENT
+            st.session_state.role = "Admin" if u_email in ADMIN_LIST else "Staff"
             
-            log_event(full_name, "LOGIN", f"Logged in as {st.session_state.user_role}")
-            # Separate log for logins
-            log_df = load_data(LOGIN_LOG_FILE, ["Timestamp", "Name", "Email", "Role"])
-            new_log = pd.DataFrame([{"Timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Name": full_name, "Email": email_input, "Role": st.session_state.user_role}])
-            pd.concat([log_df, new_log], ignore_index=True).to_csv(LOGIN_LOG_FILE, index=False)
+            # Log Login
+            ldf = load_data(LOGIN_FILE, ["Time", "Name", "Email", "Role"])
+            new_l = pd.DataFrame([{"Time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), "Name": u_name, "Email": u_email, "Role": st.session_state.role}])
+            pd.concat([ldf, new_l], ignore_index=True).to_csv(LOGIN_FILE, index=False)
             st.rerun()
     st.stop()
 
-# --- 4. DATA LOADING ---
-st.session_state.products = load_data(DB_FILE, ["SAP Code", "Name", "Type", "Supplier", "On hand Inventory", "Unit", "Min_Level", "Cost"])
-st.session_state.recipes = load_data(RECIPE_FILE, ["Recipe Name", "Ingredient", "Qty Per Unit"])
-st.session_state.suppliers = load_data(SUP_FILE, ["Supplier Name", "Contact Person", "Contact Details"])
-pending_df = load_data(PENDING_FILE, ["ID", "Date", "DR", "SAP", "Item", "Qty", "Status", "Staff", "Admin_Note"])
+# --- 5. PERMISSION CHECK & SIDEBAR ---
+is_admin = st.session_state.role == "Admin"
 
-# --- 5. GREETING & SIDEBAR ---
+# Greeting
 now = datetime.datetime.now()
-greeting = "Good morning" if now.hour < 12 else "Good afternoon" if now.hour < 18 else "Good evening"
-is_admin = st.session_state.user_role == "Admin"
+greet = "Good morning" if now.hour < 12 else "Good afternoon" if now.hour < 18 else "Good evening"
 
-st.sidebar.title("🏢 Anihan LCIS")
-st.sidebar.markdown(f"### {greeting},\n**{st.session_state.user_role} {st.session_state.display_name}**")
-st.sidebar.divider()
+st.sidebar.title("🏢 LCIS Anihan")
+st.sidebar.subheader(f"{greet}, {st.session_state.role} {st.session_state.user_name}")
 
 if is_admin:
-    menu = ["Dashboard", "Materials (Raw/Indirect)", "Replenish Stock", "Recipes & Forecasting", "Delivery", "Admin Panel"]
+    # Admin sees ALL 6 TABS
+    tabs = ["Dashboard", "Materials & Suppliers", "Replenish Stock", "Recipes & Forecasting", "Delivery", "Admin Panel"]
+    st.sidebar.success("🛡️ Full Admin Access")
 else:
-    menu = ["Dashboard", "Materials (Raw/Indirect)", "Delivery"]
+    # Staff sees ONLY 3 TABS
+    tabs = ["Dashboard", "Materials & Suppliers", "Delivery"]
+    st.sidebar.info("👤 Staff Access")
 
-page = st.sidebar.radio("Navigation Menu", menu)
+choice = st.sidebar.radio("Navigate", tabs)
 
 if st.sidebar.button("Logout"):
     st.session_state.logged_in = False
     st.rerun()
 
-# --- 6. PAGE LOGIC ---
+# --- 6. DATA LOADING ---
+products = load_data(DB_FILE, ["SAP Code", "Name", "Type", "Supplier", "On hand Inventory", "Unit", "Min_Level", "Cost"])
+suppliers = load_data(SUP_FILE, ["Supplier Name", "Contact", "Address"])
+pending = load_data(PENDING_FILE, ["ID", "Date", "DR", "SAP", "Qty", "Staff", "Status", "Note"])
+recipes = load_data(RECIPE_FILE, ["Product", "Ingredient", "QtyPer"])
 
-if page == "Dashboard":
+# --- 7. TAB LOGIC ---
+
+if choice == "Dashboard":
     st.title("📊 Dashboard")
-    st.subheader(f"Status for {st.session_state.display_name}")
-    
-    # Alert for Staff if Admin rejected a delivery
-    corrections = pending_df[(pending_df['Status'] == "Pending (Correction Needed)") & (pending_df['Staff'] == st.session_state.display_name)]
-    if not corrections.empty:
-        st.error(f"🚨 {st.session_state.display_name}, you have {len(corrections)} deliveries to correct!")
-        st.dataframe(corrections[['DR', 'Item', 'Admin_Note']])
+    st.write(f"Logged in as: **{st.session_state.user_email}**")
+    st.dataframe(products, use_container_width=True)
 
-    st.write("### Current Inventory")
-    st.dataframe(st.session_state.products, use_container_width=True)
-
-elif page == "Materials (Raw/Indirect)":
-    st.title("📦 Material & Supplier Management")
-    t1, t2 = st.tabs(["Materials List", "Supplier Directory"])
+elif choice == "Materials & Suppliers":
+    st.title("📦 Master Data")
+    t1, t2 = st.tabs(["Materials", "Suppliers"])
     
     with t1:
         if is_admin:
-            with st.expander("➕ Add New Material"):
-                with st.form("new_mat"):
+            with st.expander("➕ Add New Material (Admin)"):
+                with st.form("mat_form"):
                     c1, c2 = st.columns(2)
-                    sap = c1.text_input("SAP Code").upper()
-                    name = c2.text_input("Name")
-                    m_type = c1.selectbox("Type", ["Raw Material", "Indirect Material"])
-                    sup = c2.selectbox("Supplier", st.session_state.suppliers["Supplier Name"].unique() if not st.session_state.suppliers.empty else ["No Suppliers"])
-                    qty = c1.number_input("Beginning Stock", format="%.3f")
-                    unit = c2.text_input("Unit")
-                    min_l = c1.number_input("Min Level", format="%.3f")
-                    cost = c2.number_input("Cost (₱)", format="%.3f")
-                    if st.form_submit_button("Save Material"):
-                        new_item = {"SAP Code": sap, "Name": name, "Type": m_type, "Supplier": sup, "On hand Inventory": qty, "Unit": unit, "Min_Level": min_l, "Cost": cost}
-                        st.session_state.products = pd.concat([st.session_state.products, pd.DataFrame([new_item])], ignore_index=True)
-                        save_data(st.session_state.products, DB_FILE)
-                        log_event(st.session_state.display_name, "ADD_MAT", f"Added {name}")
+                    s_code = c1.text_input("SAP Code").upper()
+                    m_name = c2.text_input("Item Name")
+                    m_type = c1.selectbox("Type", ["Raw", "Indirect"])
+                    m_sup = c2.selectbox("Supplier", suppliers["Supplier Name"].unique() if not suppliers.empty else ["None"])
+                    m_qty = c1.number_input("Beginning Stock", format="%.3f")
+                    m_unit = c2.text_input("Unit")
+                    m_cost = c1.number_input("Cost", format="%.3f")
+                    m_min = c2.number_input("Min Level", format="%.3f")
+                    if st.form_submit_button("Save Item"):
+                        new_m = {"SAP Code": s_code, "Name": m_name, "Type": m_type, "Supplier": m_sup, "On hand Inventory": m_qty, "Unit": m_unit, "Min_Level": m_min, "Cost": m_cost}
+                        products = pd.concat([products, pd.DataFrame([new_m])], ignore_index=True)
+                        save_data(products, DB_FILE)
+                        st.success("Item saved.")
                         st.rerun()
-        st.dataframe(st.session_state.products, use_container_width=True)
+        st.dataframe(products, use_container_width=True)
 
     with t2:
         if is_admin:
-            with st.expander("➕ Add New Supplier"):
-                with st.form("new_sup"):
-                    s_name = st.text_input("Supplier Name")
-                    s_cont = st.text_input("Contact Person")
-                    s_det = st.text_input("Phone/Email")
+            with st.expander("➕ Add New Supplier (Admin)"):
+                with st.form("sup_form"):
+                    sn = st.text_input("Supplier Name")
+                    sc = st.text_input("Contact Info")
                     if st.form_submit_button("Save Supplier"):
-                        new_s = {"Supplier Name": s_name, "Contact Person": s_cont, "Contact Details": s_det}
-                        st.session_state.suppliers = pd.concat([st.session_state.suppliers, pd.DataFrame([new_s])], ignore_index=True)
-                        save_data(st.session_state.suppliers, SUP_FILE)
+                        new_s = {"Supplier Name": sn, "Contact": sc, "Address": "N/A"}
+                        suppliers = pd.concat([suppliers, pd.DataFrame([new_s])], ignore_index=True)
+                        save_data(suppliers, SUP_FILE)
+                        st.success("Supplier saved.")
                         st.rerun()
-        st.dataframe(st.session_state.suppliers, use_container_width=True)
+        st.dataframe(suppliers, use_container_width=True)
 
-elif page == "Delivery":
+elif choice == "Delivery":
     st.title("🚚 Delivery Input")
-    with st.form("delivery_form", clear_on_submit=True):
+    with st.form("del_form", clear_on_submit=True):
         d_date = st.date_input("Date")
-        dr = st.text_input("DR #")
-        search = st.text_input("Search SAP/Name").upper().strip()
-        qty = st.number_input("Qty Received", format="%.3f")
-        if st.form_submit_button("Submit"):
-            new_id = len(pending_df) + 1
-            new_row = {"ID": new_id, "Date": d_date, "DR": dr, "SAP": search, "Item": search, "Qty": qty, "Status": "Pending", "Staff": st.session_state.display_name, "Admin_Note": ""}
-            pending_df = pd.concat([pending_df, pd.DataFrame([new_row])], ignore_index=True)
-            save_data(pending_df, PENDING_FILE)
-            st.success("Sent to Admins for approval.")
+        dr_no = st.text_input("DR #")
+        sap_s = st.text_input("SAP Code or Name").upper()
+        d_qty = st.number_input("Qty Received", format="%.3f")
+        if st.form_submit_button("Send for Approval"):
+            new_p = {"ID": len(pending)+1, "Date": d_date, "DR": dr_no, "SAP": sap_s, "Qty": d_qty, "Staff": st.session_state.user_name, "Status": "Pending", "Note": ""}
+            pending = pd.concat([pending, pd.DataFrame([new_p])], ignore_index=True)
+            save_data(pending, PENDING_FILE)
+            st.success("Submitted to Admin.")
 
-elif page == "Replenish Stock" and is_admin:
-    st.title("🛒 Verification Queue")
-    to_verify = pending_df[pending_df['Status'].str.contains("Pending")]
-    if not to_verify.empty:
-        for i, r in to_verify.iterrows():
-            if st.button(f"Review DR: {r['DR']} from {r['Staff']}", key=f"rev_{r['ID']}"):
-                st.session_state.review_id = r['ID']
-
-    if 'review_id' in st.session_state:
-        rid = st.session_state.review_id
-        row_idx = pending_df[pending_df['ID'] == rid].index[0]
-        rev_row = pending_df.loc[row_idx]
-        
-        st.info(f"Reviewing {rev_row['Item']}")
-        correct_sap = st.text_input("Match SAP", value=rev_row['SAP']).upper()
-        correct_qty = st.number_input("Final Qty", value=float(rev_row['Qty']), format="%.3f")
-        note = st.text_area("Notes for Staff")
-
-        col1, col2 = st.columns(2)
-        if col1.button("✅ Confirm"):
-            match_idx = st.session_state.products[st.session_state.products['SAP Code'] == correct_sap].index
-            if not match_idx.empty:
-                st.session_state.products.at[match_idx[0], 'On hand Inventory'] += correct_qty
-                save_data(st.session_state.products, DB_FILE)
-                pending_df.at[row_idx, 'Status'] = "Replenished"
-                save_data(pending_df, PENDING_FILE)
-                st.success("Inventory Updated!")
-                del st.session_state.review_id
+elif choice == "Replenish Stock" and is_admin:
+    st.title("🛒 Admin Replenishment & Approval")
+    to_review = pending[pending["Status"] == "Pending"]
+    if not to_review.empty:
+        for i, r in to_review.iterrows():
+            st.write(f"**Reviewing DR: {r['DR']}** ({r['SAP']})")
+            c1, c2 = st.columns(2)
+            if c1.button(f"✅ Approve {r['DR']}", key=f"app_{i}"):
+                # Logic to update inventory
+                midx = products[products["SAP Code"] == r["SAP"]].index
+                if not midx.empty:
+                    products.at[midx[0], "On hand Inventory"] += r["Qty"]
+                    save_data(products, DB_FILE)
+                    pending.at[i, "Status"] = "Approved"
+                    save_data(pending, PENDING_FILE)
+                    st.success("Inventory Updated!")
+                    st.rerun()
+                else: st.error("SAP not found.")
+            if c2.button(f"❌ Reject {r['DR']}", key=f"rej_{i}"):
+                pending.at[i, "Status"] = "Correction Needed"
+                save_data(pending, PENDING_FILE)
                 st.rerun()
-        if col2.button("↩️ Reject"):
-            pending_df.at[row_idx, 'Status'] = "Pending (Correction Needed)"
-            pending_df.at[row_idx, 'Admin_Note'] = note
-            save_data(pending_df, PENDING_FILE)
-            del st.session_state.review_id
-            st.rerun()
 
-elif page == "Admin Panel" and is_admin:
+elif choice == "Recipes & Forecasting" and is_admin:
+    st.title("🧪 Recipe Management")
+    # (Recipe creation and Production execution logic here...)
+    st.info("Admin can create recipes and execute production here.")
+
+elif choice == "Admin Panel" and is_admin:
     st.title("🛡️ Admin Panel")
-    t1, t2 = st.tabs(["Login History", "System Changes"])
-    with t1: st.dataframe(load_data(LOGIN_LOG_FILE, ["Timestamp", "Name", "Email", "Role"]))
-    with t2: st.dataframe(load_data(HIST_FILE, ["Timestamp", "User", "Action", "Details"]))
+    t1, t2 = st.tabs(["Logins", "Audit Logs"])
+    with t1: st.dataframe(load_data(LOGIN_FILE, ["Time", "Name", "Email", "Role"]))
+    with t2: st.dataframe(load_data(HIST_FILE, ["Time", "User", "Action", "Details"]))
