@@ -14,12 +14,12 @@ ADMIN_LIST = [
 ]
 DOMAIN = "@anihan.edu.ph"
 
-# --- 2. DATABASE REFRESH (v23) ---
-DB_FILE = "lcis_main_v23.csv"
-PENDING_FILE = "pending_v23.csv"
-RECIPE_FILE = "recipes_v23.csv"
-SUP_FILE = "suppliers_v23.csv"
-AUDIT_FILE = "master_audit_v23.csv"
+# --- 2. DATABASE REFRESH (v24) ---
+DB_FILE = "lcis_main_v24.csv"
+PENDING_FILE = "pending_v24.csv"
+RECIPE_FILE = "recipes_v24.csv"
+SUP_FILE = "suppliers_v24.csv"
+AUDIT_FILE = "master_audit_v24.csv"
 
 def load_data(file, cols):
     if os.path.exists(file): return pd.read_csv(file)
@@ -57,18 +57,14 @@ suppliers = load_data(SUP_FILE, ["Company Name", "Representative", "Position", "
 pending = load_data(PENDING_FILE, ["ID", "Date", "DR", "Identifier", "Qty", "Unit", "Cost", "Staff", "Status"])
 recipes_db = load_data(RECIPE_FILE, ["Recipe Name", "Ingredient", "Qty Per Unit"])
 
-# --- 5. SIDEBAR & GREETING (FIXED) ---
+# --- 5. SIDEBAR & GREETING ---
 is_admin = st.session_state.role == "Admin"
 now = datetime.datetime.now()
 greet = "Good morning" if now.hour < 12 else "Good afternoon" if now.hour < 18 else "Good evening"
 
 st.sidebar.title("🏢 LCIS Anihan")
-# RESTORED GREETING
 st.sidebar.subheader(f"{greet}, {st.session_state.user_name}")
-if is_admin:
-    st.sidebar.markdown("⭐ **Admin Access Active**")
 
-# RE-ENABLED MENU LOGIC
 menu = ["Dashboard", "Materials & Suppliers", "Replenish Stock", "Recipes & Forecasting", "Delivery", "Admin Panel"] if is_admin else ["Dashboard", "Materials & Suppliers", "Delivery"]
 choice = st.sidebar.radio("Navigate", menu)
 
@@ -89,85 +85,95 @@ if choice == "Dashboard":
         return [''] * len(row)
     st.dataframe(products.style.apply(highlight_stock, axis=1), use_container_width=True)
 
-elif choice == "Materials & Suppliers":
-    st.title("📦 Master Data")
-    t1, t2 = st.tabs(["Materials", "Suppliers"])
-    with t1:
-        if is_admin:
-            with st.expander("➕ Add New Material"):
-                with st.form("add_mat"):
-                    c1, c2 = st.columns(2)
-                    s = c1.text_input("SAP Code").upper()
-                    n = c2.text_input("Name")
-                    ty = c1.selectbox("Type", ["Raw Materials", "Indirect Materials"])
-                    su = c2.selectbox("Supplier", suppliers["Company Name"].unique() if not suppliers.empty else ["N/A"])
-                    u = c1.selectbox("Unit", ["kg", "g", "L", "ml", "pc", "pack", "sack"])
-                    q = c1.number_input("Initial Stock")
-                    co = c2.number_input("Initial Cost")
-                    mi = c2.number_input("Min Level")
-                    if st.form_submit_button("Save Material"):
-                        nm = pd.DataFrame([{"SAP Code": s, "Name": n, "Type": ty, "Supplier": su, "On hand Inventory": q, "Unit": u, "Min_Level": mi, "Cost": co, "Prev_Qty": 0, "Prev_Cost": 0, "Prev_Date": "N/A"}])
-                        save_data(pd.concat([products, nm], ignore_index=True), DB_FILE)
-                        st.rerun()
-        st.dataframe(products, use_container_width=True)
-    with t2:
-        if is_admin:
-            with st.expander("➕ Register Supplier"):
-                with st.form("add_sup"):
-                    sn = st.text_input("Company Name")
-                    rep = st.text_input("Representative")
-                    if st.form_submit_button("Save Supplier"):
-                        ns = pd.DataFrame([{"Company Name": sn, "Representative": rep, "Position": "", "Contact Number": "", "Email": "", "Address": ""}])
-                        save_data(pd.concat([suppliers, ns], ignore_index=True), SUP_FILE)
-                        st.rerun()
-        st.dataframe(suppliers, use_container_width=True)
+elif choice == "Recipes & Forecasting" and is_admin:
+    st.title("🧪 Recipe Management & Production")
+    r_tab1, r_tab2, r_tab3 = st.tabs(["➕ Add New Recipe", "🚀 Production", "📝 Edit/Delete Recipes"])
+    
+    with r_tab1:
+        st.subheader("Create a New Recipe")
+        with st.form("recipe_creation"):
+            new_r_name = st.text_input("Product Name (e.g., Whole Wheat Bread)")
+            selected_ings = st.multiselect("Select Raw Materials", products["Name"].unique())
+            st.info("After clicking 'Next', you will define quantities below.")
+            submit_r = st.form_submit_button("Next: Define Quantities")
+            
+        if submit_r or 'temp_r' in st.session_state:
+            if submit_r: st.session_state.temp_r = {"name": new_r_name, "ings": selected_ings}
+            
+            with st.form("recipe_qty"):
+                st.write(f"Amounts for: **{st.session_state.temp_r['name']}**")
+                new_rows = []
+                for ing in st.session_state.temp_r['ings']:
+                    amt = st.number_input(f"Qty of {ing} per 1 unit of product", format="%.4f")
+                    new_rows.append({"Recipe Name": st.session_state.temp_r['name'], "Ingredient": ing, "Qty Per Unit": amt})
+                
+                if st.form_submit_button("Save Recipe"):
+                    recipes_db = pd.concat([recipes_db, pd.DataFrame(new_rows)], ignore_index=True)
+                    save_data(recipes_db, RECIPE_FILE)
+                    log_event(st.session_state.user_name, "RECIPE_ADD", f"Created {st.session_state.temp_r['name']}")
+                    del st.session_state.temp_r
+                    st.success("Recipe Saved Successfully!")
+                    st.rerun()
+
+    with r_tab2:
+        if recipes_db.empty:
+            st.info("Create a recipe first.")
+        else:
+            target = st.selectbox("Select Product to Produce", recipes_db["Recipe Name"].unique())
+            batch = st.number_input("Batch Size", min_value=1)
+            needed = recipes_db[recipes_db["Recipe Name"] == target]
+            
+            can_produce = True
+            for _, r in needed.iterrows():
+                total = r["Qty Per Unit"] * batch
+                curr = products[products["Name"] == r["Ingredient"]]["On hand Inventory"].values[0]
+                if curr < total:
+                    st.error(f"Insufficient {r['Ingredient']}: Need {total}, Have {curr}")
+                    can_produce = False
+            
+            if st.button("Confirm Production & Deduct Inventory", disabled=not can_produce):
+                for _, r in needed.iterrows():
+                    products.loc[products["Name"] == r["Ingredient"], "On hand Inventory"] -= (r["Qty Per Unit"] * batch)
+                save_data(products, DB_FILE)
+                log_event(st.session_state.user_name, "PRODUCTION", f"Produced {batch} {target}")
+                st.success("Inventory Updated!")
+                st.rerun()
+
+    with r_tab3:
+        st.subheader("Recipe List & Editor")
+        if not recipes_db.empty:
+            # Table-based editor
+            edited_recipes = st.data_editor(recipes_db, num_rows="dynamic", use_container_width=True)
+            if st.button("Save Changes to Recipes"):
+                save_data(edited_recipes, RECIPE_FILE)
+                st.success("Recipe Database Updated!")
+                st.rerun()
+        else:
+            st.write("No recipes available to edit.")
 
 elif choice == "Replenish Stock" and is_admin:
     st.title("🛒 Admin Approvals")
     to_rev = pending[pending["Status"] == "Pending"]
     if to_rev.empty:
-        st.info("No pending deliveries. They will appear here once submitted by staff.")
+        st.markdown("<div style='opacity:0.5; padding:40px; border:1px dashed grey; text-align:center;'>Delivery approvals will appear here after filling out the delivery form</div>", unsafe_allow_html=True)
     else:
         for i, r in to_rev.iterrows():
-            # Match by SAP or Name
             match = products[(products["SAP Code"] == r["Identifier"]) | (products["Name"] == r["Identifier"])]
             oh = match["On hand Inventory"].values[0] if not match.empty else "N/A"
-            with st.expander(f"DR: {r['DR']} | From: {r['Staff']}"):
+            with st.expander(f"Review DR: {r['DR']} | From: {r['Staff']}", expanded=True):
                 st.write(f"Item: {r['Identifier']} | Qty: {r['Qty']} | On-Hand: {oh}")
-                if st.button("Approve", key=f"app_{i}"):
+                if st.button("Approve", key=f"a{i}"):
                     if not match.empty:
                         idx = match.index[0]
-                        # History Shifting
                         products.at[idx, "Prev_Qty"] = products.at[idx, "On hand Inventory"]
                         products.at[idx, "Prev_Cost"] = products.at[idx, "Cost"]
                         products.at[idx, "Prev_Date"] = r["Date"]
-                        # Update
                         products.at[idx, "On hand Inventory"] += r["Qty"]
                         products.at[idx, "Cost"] = r["Cost"]
                         save_data(products, DB_FILE)
                         pending.at[i, "Status"] = "Approved"
                         save_data(pending, PENDING_FILE)
                         st.rerun()
-
-elif choice == "Recipes & Forecasting" and is_admin:
-    st.title("🧪 Recipes & Production")
-    r_tab1, r_tab2 = st.tabs(["Manage Recipes", "Execute Production"])
-    with r_tab1:
-        # Simplified recipe creation
-        st.write("Recipes defined in the system:")
-        st.dataframe(recipes_db, use_container_width=True)
-    with r_tab2:
-        if not recipes_db.empty:
-            target = st.selectbox("Select Product", recipes_db["Recipe Name"].unique())
-            batch = st.number_input("Quantity to Produce", min_value=1)
-            if st.button("Deduct Raw Materials"):
-                needed = recipes_db[recipes_db["Recipe Name"] == target]
-                for _, row in needed.iterrows():
-                    products.loc[products["Name"] == row["Ingredient"], "On hand Inventory"] -= (row["Qty Per Unit"] * batch)
-                save_data(products, DB_FILE)
-                log_event(st.session_state.user_name, "PRODUCTION", f"Produced {batch} {target}")
-                st.success("Stocks updated!")
-                st.rerun()
 
 elif choice == "Delivery":
     st.title("🚚 Delivery Form")
@@ -184,15 +190,27 @@ elif choice == "Delivery":
             cost = c4.number_input("Cost", key=f"c_{n}")
             items.append({"Identifier": ident, "Qty": qty, "Unit": unit, "Cost": cost})
         
+        c_add, c_sub = st.columns([1,4])
+        if c_add.form_submit_button("➕ Row"):
+            st.session_state.rows += 1
+            st.rerun()
         if st.form_submit_button("Submit"):
             for it in items:
                 if it["Identifier"]:
-                    new_row = pd.DataFrame([{"ID": len(pending)+1, "Date": dt, "DR": dr, "Identifier": it["Identifier"], "Qty": it["Qty"], "Unit": it["Unit"], "Cost": it["Cost"], "Staff": st.session_state.user_name, "Status": "Pending"}])
-                    pending = pd.concat([pending, new_row], ignore_index=True)
+                    new_r = pd.DataFrame([{"ID": len(pending)+1, "Date": dt, "DR": dr, "Identifier": it["Identifier"], "Qty": it["Qty"], "Unit": it["Unit"], "Cost": it["Cost"], "Staff": st.session_state.user_name, "Status": "Pending"}])
+                    pending = pd.concat([pending, new_r], ignore_index=True)
             save_data(pending, PENDING_FILE)
-            st.success("Submitted for approval!")
+            st.session_state.rows = 1
+            st.success("Submitted")
             st.rerun()
 
+elif choice == "Materials & Suppliers":
+    st.title("📦 Master Data")
+    t1, t2 = st.tabs(["Materials", "Suppliers"])
+    with t1:
+        st.dataframe(products, use_container_width=True)
+        # Form for adding/editing materials here...
+
 elif choice == "Admin Panel" and is_admin:
-    st.title("🛡️ Admin Panel")
-    st.dataframe(load_data(AUDIT_FILE, ["Timestamp", "User", "Type", "Details"]), use_container_width=True)
+    st.title("🛡️ Audit Trail")
+    st.dataframe(load_data(AUDIT_FILE, ["Timestamp", "User", "Type", "Details"]).sort_values("Timestamp", ascending=False), use_container_width=True)
